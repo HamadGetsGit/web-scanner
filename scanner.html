@@ -1,0 +1,205 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
+  <title>Web Scanner — PDF417 & Data Matrix</title>
+  <style>
+    :root{--bg:#0b0c10;--fg:#e8f0fe;--muted:#9aa3b2;--accent:#69f;--ok:#28a745;--warn:#ffcc00;}
+    html,body{height:100%;margin:0;font-family:system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;background:var(--bg);color:var(--fg);}
+    .wrap{max-width:980px;margin:0 auto;padding:16px 16px 64px;}
+    h1{font-size:22px;margin:8px 0 16px;}
+    .row{display:flex;gap:12px;flex-wrap:wrap;align-items:center}
+    .panel{background:#13141a;border:1px solid #202431;border-radius:14px;padding:14px;}
+    .video-wrap{position:relative;border-radius:14px;overflow:hidden;border:1px solid #202431}
+    video{width:100%;height:auto;background:#000;display:block;}
+    .crosshair{position:absolute;inset:0;pointer-events:none;box-shadow:inset 0 0 0 2px rgba(255,255,255,.12);}
+    .btn{appearance:none;border:0;border-radius:10px;padding:10px 14px;cursor:pointer;font-weight:600}
+    .btn:disabled{opacity:.5;cursor:not-allowed}
+    .btn.primary{background:#2a6cff;color:#fff}
+    .btn.secondary{background:#2c2f3a;color:#e8f0fe}
+    .btn.danger{background:#aa2d2d;color:#fff}
+    .btn.ok{background:#2f7d32;color:#fff}
+    label{font-size:13px;color:var(--muted)}
+    input[type="text"], input[type="url"], select, textarea{
+      background:#0f1117;border:1px solid #202431;color:#e8f0fe;border-radius:10px;padding:10px;width:100%;
+      font-size:14px;outline:none
+    }
+    .grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+    .mono{font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;white-space:pre-wrap;word-break:break-word}
+    .pill{display:inline-flex;align-items:center;gap:6px;padding:4px 8px;border-radius:999px;background:#1b2030;border:1px solid #273049;color:#a9b4c6;font-size:12px}
+    .status{font-size:13px;color:#aeb8cc}
+    .footer{opacity:.7;font-size:12px;margin-top:16px}
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <h1>📷 Web Scanner — PDF417 & Data Matrix (iPad‑friendly)</h1>
+
+    <div class="panel">
+      <div class="row">
+        <div style="flex:1;min-width:280px">
+          <label for="cameraSel">Camera</label>
+          <select id="cameraSel"></select>
+        </div>
+        <div>
+          <label>&nbsp;</label><br/>
+          <button id="btnStart" class="btn primary">Start Camera</button>
+          <button id="btnStop" class="btn danger" disabled>Stop</button>
+        </div>
+        <div>
+          <label>&nbsp;</label><br/>
+          <label class="pill"><input type="checkbox" id="cbBeep" checked> Beep</label>
+        </div>
+        <div>
+          <label>&nbsp;</label><br/>
+          <span class="pill" id="fmtTag">Awaiting…</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="video-wrap" style="margin:12px 0">
+      <video id="video" playsinline muted></video>
+      <div class="crosshair"></div>
+    </div>
+
+    <div class="grid">
+      <div class="panel">
+        <label for="out">Last result</label>
+        <div id="out" class="mono" style="min-height:120px;"></div>
+        <div class="status" id="status">Idle</div>
+      </div>
+      <div class="panel">
+        <label for="endpoint">POST endpoint (optional) — will send JSON</label>
+        <input id="endpoint" type="url" placeholder="https://script.google.com/macros/s/___/exec" />
+        <label for="tag">Sheet/Table name or tag (optional)</label>
+        <input id="tag" type="text" placeholder="Scans" />
+        <div class="row" style="margin-top:10px">
+          <button id="btnSendLast" class="btn secondary" disabled>Send last result</button>
+          <button id="btnClear" class="btn secondary">Clear</button>
+        </div>
+        <div class="footer">Payload schema: <span class="mono">{ text, format, ts, deviceLabel, tag }</span></div>
+      </div>
+    </div>
+  </div>
+
+  <audio id="beep" src="data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEAESsAACJWAAACABYBAGZkAAAAAA==" preload="auto"></audio>
+
+  <script type="module">
+    import { BrowserMultiFormatReader, BarcodeFormat, DecodeHintType } from "https://cdn.jsdelivr.net/npm/@zxing/browser@latest/+esm";
+
+    const video = document.getElementById('video');
+    const cameraSel = document.getElementById('cameraSel');
+    const btnStart = document.getElementById('btnStart');
+    const btnStop = document.getElementById('btnStop');
+    const beep = document.getElementById('beep');
+    const cbBeep = document.getElementById('cbBeep');
+    const out = document.getElementById('out');
+    const statusEl = document.getElementById('status');
+    const fmtTag = document.getElementById('fmtTag');
+    const endpoint = document.getElementById('endpoint');
+    const tag = document.getElementById('tag');
+    const btnSendLast = document.getElementById('btnSendLast');
+    const btnClear = document.getElementById('btnClear');
+
+    let reader;
+    let currentDeviceId = null;
+    let lastResult = null;
+
+    function setStatus(msg) { statusEl.textContent = msg; }
+    function setFmt(fmt) { fmtTag.textContent = fmt || '—'; }
+
+    async function listCameras() {
+      const devices = await BrowserMultiFormatReader.listVideoInputDevices();
+      cameraSel.innerHTML = '';
+      devices.forEach((d, i) => {
+        const opt = document.createElement('option');
+        opt.value = d.deviceId;
+        opt.textContent = d.label || `Camera ${i+1}`;
+        cameraSel.appendChild(opt);
+      });
+      // Heuristic: pick the last device (often the rear camera on iPad/iPhone)
+      if (devices.length) {
+        cameraSel.value = devices[devices.length - 1].deviceId;
+      }
+    }
+
+    function makeReader() {
+      const hints = new Map();
+      hints.set(DecodeHintType.POSSIBLE_FORMATS, [BarcodeFormat.PDF_417, BarcodeFormat.DATA_MATRIX]);
+      // Try harder for low-contrast images
+      hints.set(DecodeHintType.TRY_HARDER, true);
+      return new BrowserMultiFormatReader(hints);
+    }
+
+    async function start() {
+      btnStart.disabled = true;
+      btnStop.disabled = false;
+      setStatus('Starting camera…');
+      reader = makeReader();
+      await listCameras();
+      currentDeviceId = cameraSel.value;
+
+      // Start decoding from selected camera
+      await reader.decodeFromVideoDevice(currentDeviceId, video, (result, err, controls) => {
+        if (result) {
+          const text = result.getText();
+          const format = result.getBarcodeFormat?.name || String(result.getBarcodeFormat());
+          setFmt(format);
+          lastResult = { text, format, ts: new Date().toISOString(), deviceLabel: cameraSel.options[cameraSel.selectedIndex]?.text || '' };
+          out.textContent = text;
+          setStatus('Decoded ✓');
+          btnSendLast.disabled = !endpoint.value;
+          if (cbBeep.checked) try { beep.currentTime = 0; beep.play().catch(()=>{}); } catch(_){}
+          // Auto-post if endpoint filled
+          if (endpoint.value) { postLast(); }
+        } else if (err && !(err instanceof ZXing.NotFoundException)) {
+          setStatus('Error: ' + (err.message || err));
+        }
+      });
+      setStatus('Live');
+    }
+
+    async function stop() {
+      btnStart.disabled = false;
+      btnStop.disabled = true;
+      setStatus('Stopping…');
+      if (reader) {
+        await reader.reset();
+        reader = null;
+      }
+      setStatus('Stopped');
+    }
+
+    async function postLast() {
+      if (!lastResult || !endpoint.value) return;
+      const payload = { ...lastResult, tag: tag.value || undefined };
+      try {
+        const res = await fetch(endpoint.value, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload)
+        });
+        if (!res.ok) throw new Error('HTTP ' + res.status);
+        setStatus('Posted ✓');
+      } catch (e) {
+        setStatus('Post failed: ' + e.message);
+      }
+    }
+
+    cameraSel.addEventListener('change', async () => {
+      if (!reader) return;
+      currentDeviceId = cameraSel.value;
+      await reader.reset();
+      start().catch(err => setStatus('Start error: ' + err.message));
+    });
+
+    btnStart.addEventListener('click', () => start().catch(err => setStatus('Start error: ' + err.message)));
+    btnStop.addEventListener('click', () => stop());
+    btnSendLast.addEventListener('click', () => postLast());
+    btnClear.addEventListener('click', () => { out.textContent = ''; lastResult = null; setFmt('—'); setStatus('Cleared'); });
+
+    // iOS requires user action before camera — do nothing on load.
+  </script>
+</body>
+</html>
